@@ -84,7 +84,5 @@ BIT240080_FoodManager/
 ---
 
 ## 📹 4. Tài liệu quay Video nộp bài
-
-Xem chi tiết trong file [`HUONG_DAN_QUAY_VIDEO_BIT240080.md`](./HUONG_DAN_QUAY_VIDEO_BIT240080.md):
-- **Video 1 (2.0 điểm):** Kịch bản quay trực tiếp màn hình demo đầy đủ chức năng, quay offline tắt/bật Wi-Fi tự động đồng bộ.
-- **Video 2 (2.0 điểm):** Kịch bản thuyết minh mã nguồn theo từng file và số dòng code liên quan đến MSSV `BIT240080`.
+link video demo giao diện:
+link video thuyết minh+ demo:
