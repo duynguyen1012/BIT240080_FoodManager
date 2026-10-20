@@ -84,5 +84,5 @@ BIT240080_FoodManager/
 ---
 
 ## 📹 4. Tài liệu quay Video nộp bài
-link video demo giao diện:
-link video thuyết minh+ demo:
+link video demo giao diện: https://drive.google.com/file/d/1O-MG-P79QhtOwrk5MZ8Lg1-UQVFJTCql/view?usp=sharing
+  link video thuyết minh+ demo:
