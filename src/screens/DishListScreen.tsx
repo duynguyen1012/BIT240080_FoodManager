@@ -43,7 +43,7 @@ import {
   DEFAULT_PLACEHOLDER_IMAGE,
 } from '../database/db';
 import { useLanguage } from '../i18n/LanguageContext';
-import { syncData, setupAutoSync } from '../services/syncService';
+import { syncData, setupAutoSync, addSyncListener, SyncNotification } from '../services/syncService';
 
 type NavigationProp = NativeStackNavigationProp<RootStackParamList, 'DishList'>;
 
@@ -56,6 +56,7 @@ export default function DishListScreen() {
   const [loading, setLoading] = useState<boolean>(true);
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [isOnline, setIsOnline] = useState<boolean>(true);
+  const [syncNotice, setSyncNotice] = useState<SyncNotification | null>(null);
 
   // Lưu trữ ảnh bị lỗi để fallback sang placeholder
   const [failedImageMap, setFailedImageMap] = useState<Record<string, boolean>>({});
@@ -148,9 +149,20 @@ export default function DishListScreen() {
       loadData();
     });
 
+    const unsubListener = addSyncListener((notice) => {
+      setSyncNotice(notice);
+      if (notice.state === 'SUCCESS' || notice.state === 'ERROR') {
+        setTimeout(() => {
+          setSyncNotice(null);
+        }, 3500);
+        loadData();
+      }
+    });
+
     return () => {
       unsubNet();
       unsubSync();
+      unsubListener();
     };
   }, [loadData]);
 
@@ -353,6 +365,27 @@ export default function DishListScreen() {
           </Text>
         </TouchableOpacity>
       </View>
+
+      {/* Thanh thông báo tự động đồng bộ (Auto-sync banner) phục vụ quay video Mục 5 */}
+      {Boolean(syncNotice) && (
+        <View
+          style={[
+            styles.syncNoticeBar,
+            syncNotice?.state === 'SUCCESS'
+              ? styles.syncSuccess
+              : syncNotice?.state === 'ERROR'
+              ? styles.syncError
+              : styles.syncPending,
+          ]}
+        >
+          <Text style={styles.syncNoticeText}>
+            {syncNotice?.state === 'SYNCING' && '🔄 '}
+            {syncNotice?.state === 'SUCCESS' && '✅ '}
+            {syncNotice?.state === 'ERROR' && '⚠️ '}
+            {syncNotice?.message}
+          </Text>
+        </View>
+      )}
 
       {/* Thanh tìm kiếm và nút mở bộ lọc */}
       <View style={styles.searchSection}>
@@ -618,6 +651,32 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderBottomWidth: 1,
     borderColor: '#1E293B',
+  },
+  syncNoticeBar: {
+    paddingVertical: 6,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  syncPending: {
+    backgroundColor: '#FEF3C7',
+    borderBottomWidth: 1,
+    borderColor: '#FDE68A',
+  },
+  syncSuccess: {
+    backgroundColor: '#DCFCE7',
+    borderBottomWidth: 1,
+    borderColor: '#BBF7D0',
+  },
+  syncError: {
+    backgroundColor: '#FEE2E2',
+    borderBottomWidth: 1,
+    borderColor: '#FECACA',
+  },
+  syncNoticeText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#1F2937',
   },
   studentInfo: {
     flex: 1,
