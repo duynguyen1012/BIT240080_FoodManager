@@ -23,10 +23,10 @@
     "typescript": "~6.0.3"
   },
   "scripts": {
-    "start": "expo start",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
-    "web": "expo start --web"
+    "start": "node --require ./polyfill-node.js ./node_modules/expo/bin/cli start",
+    "android": "node --require ./polyfill-node.js ./node_modules/expo/bin/cli start --android",
+    "ios": "node --require ./polyfill-node.js ./node_modules/expo/bin/cli start --ios",
+    "web": "node --require ./polyfill-node.js ./node_modules/expo/bin/cli start --web"
   },
   "private": true
 }
