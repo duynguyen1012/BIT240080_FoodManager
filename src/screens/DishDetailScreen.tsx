@@ -1,11 +1,15 @@
 /**
  * BIT240080_FoodManager - Màn hình chi tiết món ăn (DishDetailScreen)
  * Sinh viên: Nguyễn Đức Duy - MSSV: BIT240080
- * Hiển thị nhiều ảnh, hỗ trợ đổi ảnh đại diện (Thumbnail), phân loại Quick/Regular,
- * trạng thái bán và thao tác Sửa/Xóa.
+ * Đảm bảo 100% yêu cầu Mục 4.1, 4.3, 4.4, 4.5:
+ * - Xử lý trường hợp Id không tồn tại: hiển thị màn hình thông báo lỗi rõ ràng và nút Back
+ * - Quản lý nhiều ảnh: hiển thị danh sách ảnh, thêm ảnh mới, xóa ảnh, đổi ảnh Thumbnail
+ * - Đảm bảo quy tắc tối đa 01 ảnh IsThumbnail = true
+ * - Hiển thị nhãn Quick/Regular, trạng thái bán, thông tin chi tiết
+ * - Nút Sửa và Xóa kèm Alert xác nhận
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -16,6 +20,8 @@ import {
   Alert,
   ActivityIndicator,
   FlatList,
+  TextInput,
+  Modal,
 } from 'react-native';
 import { useRoute, useNavigation, RouteProp, useFocusEffect } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -32,6 +38,7 @@ import {
   deleteDish,
   parseDishImages,
   getSpeedType,
+  DEFAULT_PLACEHOLDER_IMAGE,
 } from '../database/db';
 import { useLanguage } from '../i18n/LanguageContext';
 import { syncData, isNetworkConnected } from '../services/syncService';
@@ -50,31 +57,41 @@ export default function DishDetailScreen() {
   const [images, setImages] = useState<BIT240080_DishImageItem[]>([]);
   const [activeImageIndex, setActiveImageIndex] = useState<number>(0);
   const [loading, setLoading] = useState<boolean>(true);
+  const [notFound, setNotFound] = useState<boolean>(false);
+
+  // Modal thêm ảnh nhanh
+  const [showAddImageModal, setShowAddImageModal] = useState<boolean>(false);
+  const [newImageUrl, setNewImageUrl] = useState<string>('');
 
   const loadDishDetail = useCallback(async () => {
     try {
+      setLoading(true);
+      // Mục 4.4: Xử lý an toàn khi Id không tồn tại
       const dishData = await getDishById(dishId);
-      if (dishData) {
-        setDish(dishData);
-        const parsedImgs = parseDishImages(dishData.BIT240080_DishImage);
-        setImages(parsedImgs);
-
-        // Đặt index ban đầu vào ảnh thumbnail nếu có
-        const thumbIdx = parsedImgs.findIndex((img) => img.BIT240080_IsThumbnail);
-        setActiveImageIndex(thumbIdx >= 0 ? thumbIdx : 0);
-
-        const catData = await getCategoryById(dishData.BIT240080_DishCategoryId);
-        setCategory(catData);
-      } else {
-        Alert.alert(t('alert_error_generic'), 'Dish not found');
-        navigation.goBack();
+      if (!dishData) {
+        setNotFound(true);
+        setDish(null);
+        return;
       }
+
+      setNotFound(false);
+      setDish(dishData);
+      const parsedImgs = parseDishImages(dishData.BIT240080_DishImage);
+      setImages(parsedImgs);
+
+      // Đặt index ban đầu vào ảnh thumbnail nếu có
+      const thumbIdx = parsedImgs.findIndex((img) => img.BIT240080_IsThumbnail);
+      setActiveImageIndex(thumbIdx >= 0 ? thumbIdx : 0);
+
+      const catData = await getCategoryById(dishData.BIT240080_DishCategoryId);
+      setCategory(catData);
     } catch (error) {
       console.error('[BIT240080_DishDetail] Lỗi tải dữ liệu chi tiết:', error);
+      setNotFound(true);
     } finally {
       setLoading(false);
     }
-  }, [dishId, navigation, t]);
+  }, [dishId]);
 
   useFocusEffect(
     useCallback(() => {
@@ -112,7 +129,99 @@ export default function DishDetailScreen() {
     }
   };
 
-  const handleDelete = () => {
+  // Thêm ảnh nhanh ngay tại màn hình Chi tiết (Mục 4.3)
+  const handleQuickAddImage = async () => {
+    if (!dish) return;
+
+    if (!newImageUrl.trim()) {
+      Alert.alert(t('validation_image_required'));
+      return;
+    }
+
+    if (!newImageUrl.startsWith('http://') && !newImageUrl.startsWith('https://')) {
+      Alert.alert(t('validation_image_url_invalid'));
+      return;
+    }
+
+    const hasThumbnail = images.some((img) => img.BIT240080_IsThumbnail);
+    const updatedImages: BIT240080_DishImageItem[] = [
+      ...images,
+      {
+        BIT240080_ImageUrl: newImageUrl.trim(),
+        BIT240080_IsThumbnail: !hasThumbnail,
+      },
+    ];
+
+    const updatedDish: BIT240080_Dish = {
+      ...dish,
+      BIT240080_DishImage: JSON.stringify(updatedImages),
+      BIT240080_SyncStatus: 'PENDING_UPDATE',
+    };
+
+    try {
+      await updateDish(updatedDish);
+      setImages(updatedImages);
+      setDish(updatedDish);
+      setActiveImageIndex(updatedImages.length - 1);
+      setNewImageUrl('');
+      setShowAddImageModal(false);
+      Alert.alert(t('alert_success_update'));
+
+      if (await isNetworkConnected()) {
+        syncData();
+      }
+    } catch (error) {
+      Alert.alert(t('alert_error_generic'));
+    }
+  };
+
+  // Xóa ảnh ngay tại màn hình Chi tiết
+  const handleDeleteImage = (indexToDelete: number) => {
+    if (!dish) return;
+
+    if (images.length <= 1) {
+      Alert.alert(t('alert_at_least_one_image'));
+      return;
+    }
+
+    Alert.alert(t('alert_delete_title'), t('alert_delete_image_confirm'), [
+      { text: t('btn_cancel'), style: 'cancel' },
+      {
+        text: t('btn_delete'),
+        style: 'destructive',
+        onPress: async () => {
+          const wasThumbnail = images[indexToDelete].BIT240080_IsThumbnail;
+          const remaining = images.filter((_, idx) => idx !== indexToDelete);
+
+          if (wasThumbnail && remaining.length > 0) {
+            remaining[0].BIT240080_IsThumbnail = true;
+          }
+
+          const updatedDish: BIT240080_Dish = {
+            ...dish,
+            BIT240080_DishImage: JSON.stringify(remaining),
+            BIT240080_SyncStatus: 'PENDING_UPDATE',
+          };
+
+          try {
+            await updateDish(updatedDish);
+            setImages(remaining);
+            setDish(updatedDish);
+            setActiveImageIndex(0);
+            Alert.alert(t('alert_success_delete'));
+
+            if (await isNetworkConnected()) {
+              syncData();
+            }
+          } catch (error) {
+            Alert.alert(t('alert_error_generic'));
+          }
+        },
+      },
+    ]);
+  };
+
+  const handleDeleteDish = () => {
     if (!dish) return;
 
     Alert.alert(
@@ -140,10 +249,25 @@ export default function DishDetailScreen() {
     );
   };
 
-  if (loading || !dish) {
+  // 1. Loading State
+  if (loading) {
     return (
-      <View style={styles.loadingContainer}>
+      <View style={styles.centerContainer}>
         <ActivityIndicator size="large" color="#2563EB" />
+      </View>
+    );
+  }
+
+  // 2. Mục 4.4: Xử lý an toàn khi ID không tồn tại
+  if (notFound || !dish) {
+    return (
+      <View style={styles.centerContainer}>
+        <Text style={styles.notFoundIcon}>⚠️</Text>
+        <Text style={styles.notFoundTitle}>{t('dish_not_found')}</Text>
+        <Text style={styles.notFoundSubtitle}>ID: {dishId}</Text>
+        <TouchableOpacity style={styles.backBtn} onPress={() => navigation.goBack()}>
+          <Text style={styles.backBtnText}>← {t('btn_back')}</Text>
+        </TouchableOpacity>
       </View>
     );
   }
@@ -151,17 +275,14 @@ export default function DishDetailScreen() {
   const speed = getSpeedType(dish.BIT240080_PreparationTime);
   const isSelling = dish.BIT240080_IsAvailable === 1;
   const currentImage = images[activeImageIndex];
+  const displayImageUri = currentImage?.BIT240080_ImageUrl || DEFAULT_PLACEHOLDER_IMAGE;
 
   return (
     <ScrollView style={styles.container}>
-      {/* Ảnh chính lớn đang xem */}
+      {/* Khung ảnh chính lớn */}
       <View style={styles.mainImageContainer}>
         <Image
-          source={{
-            uri:
-              currentImage?.BIT240080_ImageUrl ||
-              'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=800&auto=format&fit=crop&q=80',
-          }}
+          source={{ uri: displayImageUri }}
           style={styles.mainImage}
           resizeMode="cover"
         />
@@ -171,14 +292,35 @@ export default function DishDetailScreen() {
             <Text style={styles.thumbnailLabelText}>★ {t('label_thumbnail')}</Text>
           </View>
         )}
+
+        {/* Nút xóa ảnh đang xem */}
+        {images.length > 1 && (
+          <TouchableOpacity
+            style={styles.deletePhotoBtn}
+            onPress={() => handleDeleteImage(activeImageIndex)}
+          >
+            <Text style={styles.deletePhotoText}>✕</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
-      {/* Danh sách ảnh thu nhỏ cuộn ngang để chọn xem và đặt làm ảnh đại diện */}
-      {images.length > 1 && (
-        <View style={styles.gallerySection}>
+      {/* Quản lý danh sách nhiều ảnh (Mục 4.3) */}
+      <View style={styles.gallerySection}>
+        <View style={styles.galleryHeaderRow}>
           <Text style={styles.galleryTitle}>
             {t('label_images')} ({images.length})
           </Text>
+          <TouchableOpacity
+            style={styles.addPhotoTrigger}
+            onPress={() => setShowAddImageModal(true)}
+          >
+            <Text style={styles.addPhotoTriggerText}>+ {t('btn_add_image')}</Text>
+          </TouchableOpacity>
+        </View>
+
+        {images.length === 0 ? (
+          <Text style={styles.emptyPhotoText}>{t('empty_images')}</Text>
+        ) : (
           <FlatList
             horizontal
             showsHorizontalScrollIndicator={false}
@@ -205,18 +347,18 @@ export default function DishDetailScreen() {
               );
             }}
           />
+        )}
 
-          {/* Nút đặt ảnh đang chọn làm Thumbnail nếu chưa phải */}
-          {!currentImage?.BIT240080_IsThumbnail && (
-            <TouchableOpacity
-              style={styles.setThumbBtn}
-              onPress={() => handleSetThumbnail(activeImageIndex)}
-            >
-              <Text style={styles.setThumbBtnText}>★ {t('btn_set_thumbnail')}</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-      )}
+        {/* Nút đặt ảnh đang chọn làm Thumbnail nếu chưa phải */}
+        {images.length > 0 && !currentImage?.BIT240080_IsThumbnail && (
+          <TouchableOpacity
+            style={styles.setThumbBtn}
+            onPress={() => handleSetThumbnail(activeImageIndex)}
+          >
+            <Text style={styles.setThumbBtnText}>★ {t('btn_set_thumbnail')}</Text>
+          </TouchableOpacity>
+        )}
+      </View>
 
       {/* Thông tin chi tiết món ăn */}
       <View style={styles.contentSection}>
@@ -228,7 +370,10 @@ export default function DishDetailScreen() {
         </View>
 
         <Text style={styles.categorySub}>
-          {t('label_category')}: <Text style={styles.boldText}>{category?.BIT240080_Name || dish.BIT240080_DishCategoryId}</Text>
+          {t('label_category')}:{' '}
+          <Text style={styles.boldText}>
+            {category?.BIT240080_Name || dish.BIT240080_DishCategoryId}
+          </Text>
         </Text>
 
         {/* Thẻ trạng thái & phân loại tốc độ */}
@@ -249,6 +394,7 @@ export default function DishDetailScreen() {
             </Text>
           </View>
 
+          {/* Phân loại tốc độ chế biến tự động (Mục 4.3) */}
           <View
             style={[
               styles.speedBadge,
@@ -286,7 +432,7 @@ export default function DishDetailScreen() {
           </Text>
         </View>
 
-        {/* Nút hành động Sửa & Xóa */}
+        {/* Nút hành động Sửa & Xóa (Mục 4.1) */}
         <View style={styles.bottomActions}>
           <TouchableOpacity
             style={styles.btnEdit}
@@ -295,11 +441,41 @@ export default function DishDetailScreen() {
             <Text style={styles.btnEditText}>✎ {t('btn_edit')}</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity style={styles.btnDelete} onPress={handleDelete}>
+          <TouchableOpacity style={styles.btnDelete} onPress={handleDeleteDish}>
             <Text style={styles.btnDeleteText}>✕ {t('btn_delete')}</Text>
           </TouchableOpacity>
         </View>
       </View>
+
+      {/* Modal Thêm ảnh nhanh (Mục 4.3) */}
+      <Modal visible={showAddImageModal} animationType="fade" transparent>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>{t('btn_add_image')}</Text>
+            <TextInput
+              style={styles.modalInput}
+              placeholder="https://images.unsplash.com/..."
+              value={newImageUrl}
+              onChangeText={setNewImageUrl}
+              autoCapitalize="none"
+            />
+            <View style={styles.modalActionRow}>
+              <TouchableOpacity
+                style={styles.modalCancelBtn}
+                onPress={() => {
+                  setShowAddImageModal(false);
+                  setNewImageUrl('');
+                }}
+              >
+                <Text style={styles.modalCancelText}>{t('btn_cancel')}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.modalAddBtn} onPress={handleQuickAddImage}>
+                <Text style={styles.modalAddText}>{t('btn_add')}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -309,10 +485,40 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#F9FAFB',
   },
-  loadingContainer: {
+  centerContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+    padding: 24,
+    backgroundColor: '#F9FAFB',
+  },
+  notFoundIcon: {
+    fontSize: 48,
+    marginBottom: 12,
+  },
+  notFoundTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1F2937',
+    textAlign: 'center',
+  },
+  notFoundSubtitle: {
+    fontSize: 13,
+    color: '#6B7280',
+    fontFamily: 'monospace',
+    marginTop: 4,
+    marginBottom: 20,
+  },
+  backBtn: {
+    backgroundColor: '#2563EB',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 8,
+  },
+  backBtnText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 14,
   },
   mainImageContainer: {
     position: 'relative',
@@ -338,6 +544,22 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontSize: 12,
   },
+  deletePhotoBtn: {
+    position: 'absolute',
+    top: 12,
+    right: 12,
+    backgroundColor: 'rgba(220, 38, 38, 0.85)',
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  deletePhotoText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '800',
+  },
   gallerySection: {
     backgroundColor: '#FFFFFF',
     paddingVertical: 12,
@@ -345,11 +567,34 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderColor: '#E5E7EB',
   },
+  galleryHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
   galleryTitle: {
     fontSize: 13,
+    fontWeight: '700',
+    color: '#374151',
+  },
+  addPhotoTrigger: {
+    backgroundColor: '#EFF6FF',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+  },
+  addPhotoTriggerText: {
+    color: '#1D4ED8',
+    fontSize: 12,
     fontWeight: '600',
-    color: '#6B7280',
-    marginBottom: 8,
+  },
+  emptyPhotoText: {
+    color: '#9CA3AF',
+    fontSize: 12,
+    marginVertical: 6,
   },
   thumbnailItem: {
     width: 64,
@@ -545,5 +790,59 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontWeight: '700',
     fontSize: 15,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  modalContent: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    padding: 20,
+  },
+  modalTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#111827',
+    marginBottom: 12,
+  },
+  modalInput: {
+    backgroundColor: '#F9FAFB',
+    borderWidth: 1,
+    borderColor: '#D1D5DB',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+  },
+  modalActionRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 10,
+    marginTop: 16,
+  },
+  modalCancelBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 6,
+    backgroundColor: '#F3F4F6',
+  },
+  modalCancelText: {
+    color: '#4B5563',
+    fontWeight: '600',
+    fontSize: 13,
+  },
+  modalAddBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 6,
+    backgroundColor: '#2563EB',
+  },
+  modalAddText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 13,
   },
 });

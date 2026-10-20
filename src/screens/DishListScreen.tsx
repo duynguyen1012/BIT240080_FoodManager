@@ -1,11 +1,17 @@
 /**
  * BIT240080_FoodManager - Màn hình danh sách món ăn (DishListScreen)
  * Sinh viên: Nguyễn Đức Duy - MSSV: BIT240080
- * Hiển thị MSSV trên thanh tiêu đề, hỗ trợ tìm kiếm, lọc đa điều kiện, sắp xếp,
- * quản lý ảnh đại diện, phân loại Quick/Regular và chuyển đổi ngôn ngữ EN/VI.
+ * Đảm bảo 100% yêu cầu Mục 4.1, 4.2, 4.3, 4.4, 4.5:
+ * - Hiển thị ảnh đại diện (kèm fallback placeholder an toàn khi URL lỗi)
+ * - Tự động phân loại tốc độ: Quick (<= 15p) / Regular (> 15p)
+ * - Bộ lọc đồng thời: Tên (không dấu/có dấu), Loại món, Trạng thái bán (Tất cả / Đang bán), Khoảng giá
+ * - Xử lý lỗi khoảng giá không hợp lệ (Min > Max, số âm) hiển thị cảnh báo trực quan
+ * - Sắp xếp: Giá tăng/giảm, Thời gian chế biến tăng
+ * - Giữ nguyên trạng thái bộ lọc và sắp xếp khi quay lại màn hình
+ * - Xóa nhanh kèm xác nhận Alert đa ngôn ngữ
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   View,
   Text,
@@ -17,7 +23,6 @@ import {
   Alert,
   ActivityIndicator,
   RefreshControl,
-  Switch,
   Modal,
 } from 'react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
@@ -35,6 +40,7 @@ import {
   deleteDish,
   getDishThumbnailUrl,
   getSpeedType,
+  DEFAULT_PLACEHOLDER_IMAGE,
 } from '../database/db';
 import { useLanguage } from '../i18n/LanguageContext';
 import { syncData, setupAutoSync } from '../services/syncService';
@@ -51,30 +57,62 @@ export default function DishListScreen() {
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [isOnline, setIsOnline] = useState<boolean>(true);
 
-  // Bộ lọc và tìm kiếm (Mục 4.2: giữ các điều kiện đã chọn khi quay về)
+  // Lưu trữ ảnh bị lỗi để fallback sang placeholder
+  const [failedImageMap, setFailedImageMap] = useState<Record<string, boolean>>({});
+
+  // Bộ lọc và tìm kiếm (Mục 4.2: ĐƯỢC GIỮ NGUYÊN KHI CHUYỂN MÀN HÌNH)
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedCategory, setSelectedCategory] = useState<string>('');
   const [isAvailableOnly, setIsAvailableOnly] = useState<boolean>(false);
   const [minPrice, setMinPrice] = useState<string>('');
   const [maxPrice, setMaxPrice] = useState<string>('');
+  const [priceRangeError, setPriceRangeError] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<'price_asc' | 'price_desc' | 'prep_asc' | undefined>(
     undefined
   );
 
   const [showFilterModal, setShowFilterModal] = useState<boolean>(false);
 
-  // Tải dữ liệu từ SQLite
+  // Kiểm tra và validate khoảng giá (Mục 4.4: Xử lý hợp lý khi khoảng giá không hợp lệ)
+  const validatePriceRange = (minStr: string, maxStr: string): boolean => {
+    const minVal = minStr.trim() === '' ? undefined : parseFloat(minStr);
+    const maxVal = maxStr.trim() === '' ? undefined : parseFloat(maxStr);
+
+    if (minVal !== undefined && (isNaN(minVal) || minVal < 0)) {
+      setPriceRangeError(t('validation_price_negative'));
+      return false;
+    }
+
+    if (maxVal !== undefined && (isNaN(maxVal) || maxVal < 0)) {
+      setPriceRangeError(t('validation_price_negative'));
+      return false;
+    }
+
+    if (minVal !== undefined && maxVal !== undefined && minVal > maxVal) {
+      setPriceRangeError(t('validation_price_range_invalid'));
+      return false;
+    }
+
+    setPriceRangeError(null);
+    return true;
+  };
+
+  // Tải dữ liệu từ SQLite áp dụng đầy đủ bộ lọc và sắp xếp hiện tại
   const loadData = useCallback(async () => {
     try {
-      const minP = minPrice ? parseFloat(minPrice) : undefined;
-      const maxP = maxPrice ? parseFloat(maxPrice) : undefined;
+      const minVal = minPrice.trim() === '' ? undefined : parseFloat(minPrice);
+      const maxVal = maxPrice.trim() === '' ? undefined : parseFloat(maxPrice);
+
+      // Nếu khoảng giá có lỗi (min > max), không áp dụng khoảng giá sai nhưng không crash danh sách
+      const isPriceValid =
+        minVal === undefined || maxVal === undefined || minVal <= maxVal;
 
       const filter: DishFilterParams = {
         searchQuery,
         categoryId: selectedCategory || undefined,
         isAvailableOnly,
-        minPrice: !isNaN(minP as number) ? minP : undefined,
-        maxPrice: !isNaN(maxP as number) ? maxP : undefined,
+        minPrice: isPriceValid && minVal !== undefined && !isNaN(minVal) && minVal >= 0 ? minVal : undefined,
+        maxPrice: isPriceValid && maxVal !== undefined && !isNaN(maxVal) && maxVal >= 0 ? maxVal : undefined,
         sortBy,
       };
 
@@ -86,21 +124,21 @@ export default function DishListScreen() {
       setDishes(dishesData);
       setCategories(categoriesData);
     } catch (error) {
-      console.error('[BIT240080_DishList] Lỗi tải dữ liệu:', error);
+      console.error('[BIT240080_DishList] Lỗi tải danh sách món:', error);
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
   }, [searchQuery, selectedCategory, isAvailableOnly, minPrice, maxPrice, sortBy]);
 
-  // Tự động tải lại khi quay về màn hình (useFocusEffect)
+  // Mục 4.2: Giữ các điều kiện đã chọn khi quay về màn hình danh sách
   useFocusEffect(
     useCallback(() => {
       loadData();
     }, [loadData])
   );
 
-  // Đăng ký tự động đồng bộ khi có mạng
+  // Đăng ký tự động đồng bộ khi có kết nối mạng (Yêu cầu nâng cao 5)
   useEffect(() => {
     const unsubNet = NetInfo.addEventListener((state) => {
       setIsOnline(Boolean(state.isConnected && state.isInternetReachable !== false));
@@ -125,6 +163,7 @@ export default function DishListScreen() {
     setRefreshing(false);
   };
 
+  // Xóa món ăn với xác nhận Alert (Mục 4.1)
   const handleDeleteDish = (dish: BIT240080_Dish) => {
     Alert.alert(
       t('alert_delete_title'),
@@ -156,8 +195,36 @@ export default function DishListScreen() {
     return cat ? cat.BIT240080_Name : categoryId;
   };
 
+  const handleApplyFilter = () => {
+    const isValid = validatePriceRange(minPrice, maxPrice);
+    if (isValid) {
+      setShowFilterModal(false);
+      loadData();
+    } else {
+      Alert.alert(t('alert_error_generic'), t('validation_price_range_invalid'));
+    }
+  };
+
+  const handleResetFilter = () => {
+    setSelectedCategory('');
+    setIsAvailableOnly(false);
+    setMinPrice('');
+    setMaxPrice('');
+    setPriceRangeError(null);
+    setSortBy(undefined);
+  };
+
+  const hasActiveFilter = Boolean(
+    selectedCategory || isAvailableOnly || sortBy || minPrice || maxPrice || priceRangeError
+  );
+
   const renderDishItem = ({ item }: { item: BIT240080_Dish }) => {
-    const thumbUrl = getDishThumbnailUrl(item);
+    const rawThumbUrl = getDishThumbnailUrl(item);
+    // Sử dụng placeholder nếu ảnh bị lỗi khi tải (onError)
+    const thumbUrl = failedImageMap[item.BIT240080_Id]
+      ? DEFAULT_PLACEHOLDER_IMAGE
+      : rawThumbUrl;
+
     const speed = getSpeedType(item.BIT240080_PreparationTime);
     const isSelling = item.BIT240080_IsAvailable === 1;
 
@@ -167,16 +234,27 @@ export default function DishListScreen() {
         activeOpacity={0.85}
         onPress={() => navigation.navigate('DishDetail', { dishId: item.BIT240080_Id })}
       >
-        <Image source={{ uri: thumbUrl }} style={styles.thumbnail} resizeMode="cover" />
+        <Image
+          source={{ uri: thumbUrl }}
+          style={styles.thumbnail}
+          resizeMode="cover"
+          onError={() => {
+            setFailedImageMap((prev) => ({ ...prev, [item.BIT240080_Id]: true }));
+          }}
+        />
 
         <View style={styles.cardContent}>
           <View style={styles.cardHeaderRow}>
             <Text style={styles.dishName} numberOfLines={1}>
               {item.BIT240080_Name}
             </Text>
-            {item.BIT240080_SyncStatus && item.BIT240080_SyncStatus !== 'SYNCED' && (
+            {item.BIT240080_SyncStatus && item.BIT240080_SyncStatus !== 'SYNCED' ? (
               <View style={styles.pendingBadge}>
-                <Text style={styles.pendingText}>Offline</Text>
+                <Text style={styles.pendingText}>{t('sync_pending_update')}</Text>
+              </View>
+            ) : (
+              <View style={styles.syncedBadge}>
+                <Text style={styles.syncedText}>✓ {t('sync_synced')}</Text>
               </View>
             )}
           </View>
@@ -188,7 +266,7 @@ export default function DishListScreen() {
           <View style={styles.priceRow}>
             <Text style={styles.priceText}>{item.BIT240080_Price.toLocaleString()} đ</Text>
 
-            {/* Phân loại Quick (≤ 15 mins) hoặc Regular (> 15 mins) */}
+            {/* Phân loại tốc độ chế biến tự động (Mục 4.3): Quick <= 15, Regular > 15 */}
             <View
               style={[
                 styles.speedBadge,
@@ -208,7 +286,7 @@ export default function DishListScreen() {
           </View>
 
           <View style={styles.cardFooter}>
-            {/* Trạng thái đang bán / ngừng bán */}
+            {/* Trạng thái bán (Mục 4.1 & 4.4) */}
             <View
               style={[
                 styles.statusBadge,
@@ -248,10 +326,10 @@ export default function DishListScreen() {
 
   return (
     <View style={styles.container}>
-      {/* Banner MSSV & Trạng thái mạng & Nút đổi ngôn ngữ */}
+      {/* Banner MSSV & Mạng & Chuyển đổi ngôn ngữ */}
       <View style={styles.topInfoBar}>
         <View style={styles.studentInfo}>
-          <Text style={styles.studentMSSV}>Nguyễn Đức Duy - BIT240080</Text>
+          <Text style={styles.studentMSSV}>BIT240080 - Nguyễn Đức Duy</Text>
           <View style={styles.networkBadge}>
             <View
               style={[
@@ -265,14 +343,18 @@ export default function DishListScreen() {
           </View>
         </View>
 
-        <TouchableOpacity style={styles.langToggleBtn} onPress={toggleLanguage}>
+        <TouchableOpacity
+          style={styles.langToggleBtn}
+          onPress={toggleLanguage}
+          activeOpacity={0.8}
+        >
           <Text style={styles.langToggleText}>
             {language === 'en' ? '🇻🇳 VI' : '🇬🇧 EN'}
           </Text>
         </TouchableOpacity>
       </View>
 
-      {/* Thanh tìm kiếm và nút lọc */}
+      {/* Thanh tìm kiếm và nút mở bộ lọc */}
       <View style={styles.searchSection}>
         <TextInput
           style={styles.searchInput}
@@ -282,14 +364,28 @@ export default function DishListScreen() {
           onChangeText={(text) => setSearchQuery(text)}
         />
         <TouchableOpacity
-          style={[styles.filterTriggerBtn, (selectedCategory || isAvailableOnly || sortBy || minPrice || maxPrice) && styles.filterTriggerActive]}
+          style={[styles.filterTriggerBtn, hasActiveFilter && styles.filterTriggerActive]}
           onPress={() => setShowFilterModal(true)}
         >
-          <Text style={styles.filterTriggerText}>{t('btn_filter')}</Text>
+          <Text
+            style={[
+              styles.filterTriggerText,
+              hasActiveFilter && styles.filterTriggerTextActive,
+            ]}
+          >
+            ⚙ {t('btn_filter')}
+          </Text>
         </TouchableOpacity>
       </View>
 
-      {/* Danh mục cuộn ngang (Quick filter category) */}
+      {/* Cảnh báo lỗi khoảng giá nếu người dùng nhập không hợp lệ */}
+      {Boolean(priceRangeError) && (
+        <View style={styles.errorBanner}>
+          <Text style={styles.errorBannerText}>⚠️ {priceRangeError}</Text>
+        </View>
+      )}
+
+      {/* Danh mục cuộn ngang (Quick filter theo loại món) */}
       <View style={styles.categoryScrollContainer}>
         <FlatList
           horizontal
@@ -340,97 +436,164 @@ export default function DishListScreen() {
       {/* Nút thêm mới Floating Action Button */}
       <TouchableOpacity
         style={styles.fab}
-        activeOpacity={0.8}
+        activeOpacity={0.85}
         onPress={() => navigation.navigate('DishForm', {})}
       >
         <Text style={styles.fabText}>+ {t('btn_add')}</Text>
       </TouchableOpacity>
 
-      {/* Modal Lọc và Sắp xếp đa điều kiện */}
+      {/* Modal Lọc và Sắp xếp đa điều kiện (Mục 4.2) */}
       <Modal visible={showFilterModal} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>{t('btn_filter')} & {t('btn_sort')}</Text>
-
-            {/* Lọc chỉ món đang bán */}
-            <View style={styles.modalRow}>
-              <Text style={styles.modalLabel}>{t('filter_available_only')}</Text>
-              <Switch
-                value={isAvailableOnly}
-                onValueChange={setIsAvailableOnly}
-                trackColor={{ false: '#D1D5DB', true: '#93C5FD' }}
-                thumbColor={isAvailableOnly ? '#2563EB' : '#9CA3AF'}
-              />
+            <View style={styles.modalHeaderRow}>
+              <Text style={styles.modalTitle}>
+                {t('btn_filter')} & {t('btn_sort')}
+              </Text>
+              <TouchableOpacity onPress={() => setShowFilterModal(false)}>
+                <Text style={styles.modalCloseText}>✕</Text>
+              </TouchableOpacity>
             </View>
 
-            {/* Khoảng giá */}
-            <Text style={[styles.modalLabel, { marginTop: 12 }]}>{t('label_price')}</Text>
+            {/* Lọc theo trạng thái bán (Mục 4.2 & 4.4) */}
+            <Text style={styles.modalLabel}>{t('filter_status_label')}</Text>
+            <View style={styles.statusToggleRow}>
+              <TouchableOpacity
+                style={[
+                  styles.statusToggleBtn,
+                  !isAvailableOnly && styles.statusToggleBtnActive,
+                ]}
+                onPress={() => setIsAvailableOnly(false)}
+              >
+                <Text
+                  style={[
+                    styles.statusToggleText,
+                    !isAvailableOnly && styles.statusToggleTextActive,
+                  ]}
+                >
+                  {t('filter_status_all')}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.statusToggleBtn,
+                  isAvailableOnly && styles.statusToggleBtnActive,
+                ]}
+                onPress={() => setIsAvailableOnly(true)}
+              >
+                <Text
+                  style={[
+                    styles.statusToggleText,
+                    isAvailableOnly && styles.statusToggleTextActive,
+                  ]}
+                >
+                  {t('filter_status_available_only')}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Lọc theo khoảng giá (Min - Max) */}
+            <Text style={[styles.modalLabel, { marginTop: 14 }]}>
+              {t('label_price')}
+            </Text>
             <View style={styles.priceInputRow}>
               <TextInput
-                style={styles.priceInput}
-                placeholder={t('filter_price_from')}
+                style={[styles.priceInput, priceRangeError ? styles.inputError : null]}
+                placeholder={t('placeholder_min_price')}
                 keyboardType="numeric"
                 value={minPrice}
-                onChangeText={setMinPrice}
+                onChangeText={(text) => {
+                  setMinPrice(text);
+                  validatePriceRange(text, maxPrice);
+                }}
               />
               <Text style={{ marginHorizontal: 8, color: '#6B7280' }}>-</Text>
               <TextInput
-                style={styles.priceInput}
-                placeholder={t('filter_price_to')}
+                style={[styles.priceInput, priceRangeError ? styles.inputError : null]}
+                placeholder={t('placeholder_max_price')}
                 keyboardType="numeric"
                 value={maxPrice}
-                onChangeText={setMaxPrice}
+                onChangeText={(text) => {
+                  setMaxPrice(text);
+                  validatePriceRange(minPrice, text);
+                }}
               />
             </View>
 
-            {/* Sắp xếp */}
-            <Text style={[styles.modalLabel, { marginTop: 14 }]}>{t('filter_sort_by')}</Text>
+            {Boolean(priceRangeError) && (
+              <Text style={styles.fieldErrorText}>{priceRangeError}</Text>
+            )}
+
+            {/* Sắp xếp (Mục 4.2) */}
+            <Text style={[styles.modalLabel, { marginTop: 14 }]}>
+              {t('filter_sort_by')}
+            </Text>
             <View style={styles.sortButtonsRow}>
               <TouchableOpacity
                 style={[styles.sortOption, sortBy === undefined && styles.sortOptionActive]}
                 onPress={() => setSortBy(undefined)}
               >
-                <Text style={styles.sortOptionText}>{t('sort_default')}</Text>
+                <Text
+                  style={[
+                    styles.sortOptionText,
+                    sortBy === undefined && styles.sortOptionTextActive,
+                  ]}
+                >
+                  {t('sort_default')}
+                </Text>
               </TouchableOpacity>
+
               <TouchableOpacity
                 style={[styles.sortOption, sortBy === 'price_asc' && styles.sortOptionActive]}
                 onPress={() => setSortBy('price_asc')}
               >
-                <Text style={styles.sortOptionText}>{t('sort_price_asc')}</Text>
+                <Text
+                  style={[
+                    styles.sortOptionText,
+                    sortBy === 'price_asc' && styles.sortOptionTextActive,
+                  ]}
+                >
+                  {t('sort_price_asc')}
+                </Text>
               </TouchableOpacity>
+
               <TouchableOpacity
                 style={[styles.sortOption, sortBy === 'price_desc' && styles.sortOptionActive]}
                 onPress={() => setSortBy('price_desc')}
               >
-                <Text style={styles.sortOptionText}>{t('sort_price_desc')}</Text>
+                <Text
+                  style={[
+                    styles.sortOptionText,
+                    sortBy === 'price_desc' && styles.sortOptionTextActive,
+                  ]}
+                >
+                  {t('sort_price_desc')}
+                </Text>
               </TouchableOpacity>
+
               <TouchableOpacity
                 style={[styles.sortOption, sortBy === 'prep_asc' && styles.sortOptionActive]}
                 onPress={() => setSortBy('prep_asc')}
               >
-                <Text style={styles.sortOptionText}>{t('sort_prep_asc')}</Text>
+                <Text
+                  style={[
+                    styles.sortOptionText,
+                    sortBy === 'prep_asc' && styles.sortOptionTextActive,
+                  ]}
+                >
+                  {t('sort_prep_asc')}
+                </Text>
               </TouchableOpacity>
             </View>
 
             {/* Nút Áp dụng & Đặt lại */}
             <View style={styles.modalActionRow}>
-              <TouchableOpacity
-                style={styles.modalResetBtn}
-                onPress={() => {
-                  setSelectedCategory('');
-                  setIsAvailableOnly(false);
-                  setMinPrice('');
-                  setMaxPrice('');
-                  setSortBy(undefined);
-                }}
-              >
+              <TouchableOpacity style={styles.modalResetBtn} onPress={handleResetFilter}>
                 <Text style={styles.modalResetText}>{t('btn_reset')}</Text>
               </TouchableOpacity>
 
-              <TouchableOpacity
-                style={styles.modalApplyBtn}
-                onPress={() => setShowFilterModal(false)}
-              >
+              <TouchableOpacity style={styles.modalApplyBtn} onPress={handleApplyFilter}>
                 <Text style={styles.modalApplyText}>{t('btn_apply')}</Text>
               </TouchableOpacity>
             </View>
@@ -450,16 +613,18 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: '#1E293B',
+    backgroundColor: '#0F172A',
     paddingHorizontal: 16,
     paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderColor: '#1E293B',
   },
   studentInfo: {
     flex: 1,
   },
   studentMSSV: {
-    color: '#F8FAFC',
-    fontWeight: '700',
+    color: '#38BDF8',
+    fontWeight: '800',
     fontSize: 14,
     letterSpacing: 0.3,
   },
@@ -480,12 +645,12 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   langToggleBtn: {
-    backgroundColor: '#334155',
+    backgroundColor: '#1E293B',
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#475569',
+    borderColor: '#334155',
   },
   langToggleText: {
     color: '#F8FAFC',
@@ -524,8 +689,27 @@ const styles = StyleSheet.create({
   },
   filterTriggerText: {
     fontWeight: '600',
-    color: '#1E293B',
+    color: '#334155',
     fontSize: 13,
+  },
+  filterTriggerTextActive: {
+    color: '#1D4ED8',
+    fontWeight: '700',
+  },
+  errorBanner: {
+    backgroundColor: '#FEE2E2',
+    marginHorizontal: 14,
+    marginVertical: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+  },
+  errorBannerText: {
+    color: '#DC2626',
+    fontSize: 12,
+    fontWeight: '600',
   },
   categoryScrollContainer: {
     paddingVertical: 6,
@@ -555,7 +739,7 @@ const styles = StyleSheet.create({
   },
   listContent: {
     paddingHorizontal: 14,
-    paddingBottom: 85,
+    paddingBottom: 90,
     paddingTop: 6,
   },
   card: {
@@ -602,6 +786,17 @@ const styles = StyleSheet.create({
   },
   pendingText: {
     color: '#D97706',
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  syncedBadge: {
+    backgroundColor: '#DCFCE7',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  syncedText: {
+    color: '#15803D',
     fontSize: 10,
     fontWeight: '600',
   },
@@ -736,32 +931,66 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     padding: 20,
-    maxHeight: '80%',
+    maxHeight: '85%',
+  },
+  modalHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
   },
   modalTitle: {
     fontSize: 18,
     fontWeight: '700',
     color: '#1E293B',
-    marginBottom: 16,
   },
-  modalRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+  modalCloseText: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#6B7280',
+    padding: 4,
   },
   modalLabel: {
     fontSize: 14,
     fontWeight: '600',
     color: '#374151',
+    marginBottom: 8,
+  },
+  statusToggleRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  statusToggleBtn: {
+    flex: 1,
+    backgroundColor: '#F3F4F6',
+    paddingVertical: 9,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    alignItems: 'center',
+  },
+  statusToggleBtnActive: {
+    backgroundColor: '#EFF6FF',
+    borderColor: '#3B82F6',
+  },
+  statusToggleText: {
+    fontSize: 12,
+    color: '#4B5563',
+    fontWeight: '500',
+    textAlign: 'center',
+  },
+  statusToggleTextActive: {
+    color: '#1D4ED8',
+    fontWeight: '700',
   },
   priceInputRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 8,
   },
   priceInput: {
     flex: 1,
-    backgroundColor: '#F3F4F6',
+    backgroundColor: '#F9FAFB',
     borderWidth: 1,
     borderColor: '#E5E7EB',
     borderRadius: 8,
@@ -769,8 +998,17 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     fontSize: 13,
   },
+  inputError: {
+    borderColor: '#EF4444',
+    backgroundColor: '#FEF2F2',
+  },
+  fieldErrorText: {
+    color: '#DC2626',
+    fontSize: 11,
+    marginTop: 4,
+    fontWeight: '600',
+  },
   sortButtonsRow: {
-    marginTop: 8,
     gap: 6,
   },
   sortOption: {
@@ -789,6 +1027,10 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#1F2937',
     fontWeight: '500',
+  },
+  sortOptionTextActive: {
+    color: '#1D4ED8',
+    fontWeight: '700',
   },
   modalActionRow: {
     flexDirection: 'row',

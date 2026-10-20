@@ -15,6 +15,10 @@ export interface BIT240080_DishCategory {
   BIT240080_Description?: string;
 }
 
+export interface BIT240080_CategoryWithCount extends BIT240080_DishCategory {
+  dishCount: number;
+}
+
 export type BIT240080_SyncStatusType =
   | 'SYNCED'
   | 'PENDING_CREATE'

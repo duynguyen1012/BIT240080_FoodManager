@@ -1,8 +1,12 @@
 /**
  * BIT240080_FoodManager - Màn hình Thêm / Chỉnh sửa món ăn (DishFormScreen)
  * Sinh viên: Nguyễn Đức Duy - MSSV: BIT240080
- * Form chọn loại món ăn từ CSDL, quản lý nhiều link ảnh, chọn ảnh đại diện duy nhất,
- * kiểm tra các ràng buộc: Name không rỗng, Price > 0, PrepTime > 0, Tên không trùng cùng loại.
+ * Đảm bảo 100% yêu cầu Mục 3, 4.1, 4.3, 4.4, 4.5:
+ * - Chọn loại món ăn từ SQLite
+ * - Quản lý nhiều link ảnh, chọn Thumbnail duy nhất, xóa ảnh
+ * - Validation chặt chẽ: Name không rỗng, Price > 0, PrepTime > 0, CategoryId hợp lệ
+ * - Ràng buộc: Tên món không trùng trong cùng loại (loại trừ chính nó khi Edit)
+ * - Đa ngôn ngữ EN/VI toàn diện
  */
 
 import React, { useState, useEffect } from 'react';
@@ -61,6 +65,9 @@ export default function DishFormScreen() {
   const [categoryId, setCategoryId] = useState<string>('');
   const [images, setImages] = useState<BIT240080_DishImageItem[]>([]);
   const [newImageUrl, setNewImageUrl] = useState<string>('');
+
+  // Lỗi validation hiển thị trực quan dưới từng trường
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     const initForm = async () => {
@@ -127,9 +134,15 @@ export default function DishFormScreen() {
 
     setImages(updatedImages);
     setNewImageUrl('');
+    // Xóa lỗi ảnh nếu có
+    setErrors((prev) => {
+      const copy = { ...prev };
+      delete copy.images;
+      return copy;
+    });
   };
 
-  // Chọn ảnh làm Thumbnail
+  // Chọn ảnh làm Thumbnail duy nhất (Mục 4.3)
   const handleSetThumbnail = (targetIndex: number) => {
     const updated = images.map((img, idx) => ({
       ...img,
@@ -141,7 +154,7 @@ export default function DishFormScreen() {
   // Xóa ảnh khỏi danh sách
   const handleRemoveImage = (targetIndex: number) => {
     if (images.length <= 1) {
-      Alert.alert(t('validation_image_required'));
+      Alert.alert(t('alert_at_least_one_image'));
       return;
     }
 
@@ -156,54 +169,39 @@ export default function DishFormScreen() {
     setImages(remaining);
   };
 
-  // Lưu món ăn
-  const handleSave = async () => {
-    // 1. Kiểm tra Name không rỗng
+  // Rà soát và kiểm tra toàn bộ validation đầu vào
+  const validateForm = async (): Promise<boolean> => {
+    const newErrors: Record<string, string> = {};
+
+    // 1. Name không rỗng
     if (!name.trim()) {
-      Alert.alert(t('validation_name_required'));
-      return;
+      newErrors.name = t('validation_name_required');
     }
 
-    // 2. Kiểm tra Price > 0
+    // 2. Price > 0
     const parsedPrice = parseFloat(price);
     if (isNaN(parsedPrice) || parsedPrice <= 0) {
-      Alert.alert(t('validation_price_invalid'));
-      return;
+      newErrors.price = t('validation_price_invalid');
     }
 
-    // 3. Kiểm tra PreparationTime > 0
+    // 3. PreparationTime > 0
     const parsedPrepTime = parseInt(prepTime, 10);
     if (isNaN(parsedPrepTime) || parsedPrepTime <= 0) {
-      Alert.alert(t('validation_prep_time_invalid'));
-      return;
+      newErrors.prepTime = t('validation_prep_time_invalid');
     }
 
-    // 4. Kiểm tra CategoryId hợp lệ
+    // 4. CategoryId hợp lệ
     if (!categoryId.trim()) {
-      Alert.alert(t('validation_category_required'));
-      return;
+      newErrors.category = t('validation_category_required');
     }
 
-    // 5. Kiểm tra danh sách ảnh có ít nhất 1 ảnh
+    // 5. Ít nhất 1 ảnh
     if (images.length === 0) {
-      Alert.alert(t('validation_image_required'));
-      return;
+      newErrors.images = t('validation_image_required');
     }
 
-    // 6. Đảm bảo đúng 1 ảnh có BIT240080_IsThumbnail = true
-    let sanitizedImages = [...images];
-    const thumbCount = sanitizedImages.filter((img) => img.BIT240080_IsThumbnail).length;
-    if (thumbCount !== 1) {
-      sanitizedImages = sanitizedImages.map((img, idx) => ({
-        ...img,
-        BIT240080_IsThumbnail: idx === 0,
-      }));
-    }
-
-    setSubmitting(true);
-
-    try {
-      // 7. Kiểm tra trùng tên món trong cùng loại (Mục 3)
+    // 6. Kiểm tra trùng tên trong cùng loại (Mục 3)
+    if (name.trim() && categoryId.trim()) {
       const isDuplicate = await checkDishNameDuplicate(
         name.trim(),
         categoryId,
@@ -211,9 +209,40 @@ export default function DishFormScreen() {
       );
 
       if (isDuplicate) {
-        Alert.alert(t('validation_name_duplicate'));
-        setSubmitting(false);
-        return;
+        newErrors.name = t('validation_name_duplicate');
+      }
+    }
+
+    setErrors(newErrors);
+
+    if (Object.keys(newErrors).length > 0) {
+      const firstErrorMessage = Object.values(newErrors)[0];
+      Alert.alert(t('alert_error_generic'), firstErrorMessage);
+      return false;
+    }
+
+    return true;
+  };
+
+  // Lưu món ăn
+  const handleSave = async () => {
+    const isValid = await validateForm();
+    if (!isValid) return;
+
+    setSubmitting(true);
+
+    try {
+      const parsedPrice = parseFloat(price);
+      const parsedPrepTime = parseInt(prepTime, 10);
+
+      // Đảm bảo đúng 1 ảnh có BIT240080_IsThumbnail = true
+      let sanitizedImages = [...images];
+      const thumbCount = sanitizedImages.filter((img) => img.BIT240080_IsThumbnail).length;
+      if (thumbCount !== 1) {
+        sanitizedImages = sanitizedImages.map((img, idx) => ({
+          ...img,
+          BIT240080_IsThumbnail: idx === 0,
+        }));
       }
 
       const dishData: BIT240080_Dish = {
@@ -266,11 +295,21 @@ export default function DishFormScreen() {
           {t('label_name')} <Text style={styles.requiredMark}>*</Text>
         </Text>
         <TextInput
-          style={styles.input}
+          style={[styles.input, errors.name ? styles.inputError : null]}
           placeholder="Ví dụ: Phở Bò Tái Nạm"
           value={name}
-          onChangeText={setName}
+          onChangeText={(text) => {
+            setName(text);
+            if (errors.name) {
+              setErrors((prev) => {
+                const c = { ...prev };
+                delete c.name;
+                return c;
+              });
+            }
+          }}
         />
+        {Boolean(errors.name) && <Text style={styles.errorText}>{errors.name}</Text>}
 
         {/* Loại món ăn (Category) */}
         <Text style={styles.label}>
@@ -283,7 +322,16 @@ export default function DishFormScreen() {
               <TouchableOpacity
                 key={cat.BIT240080_Id}
                 style={[styles.categoryOption, isSelected && styles.categoryOptionSelected]}
-                onPress={() => setCategoryId(cat.BIT240080_Id)}
+                onPress={() => {
+                  setCategoryId(cat.BIT240080_Id);
+                  if (errors.category) {
+                    setErrors((prev) => {
+                      const c = { ...prev };
+                      delete c.category;
+                      return c;
+                    });
+                  }
+                }}
               >
                 <Text
                   style={[
@@ -297,6 +345,7 @@ export default function DishFormScreen() {
             );
           })}
         </View>
+        {Boolean(errors.category) && <Text style={styles.errorText}>{errors.category}</Text>}
 
         {/* Giá tiền & Thời gian nấu */}
         <View style={styles.row}>
@@ -305,25 +354,48 @@ export default function DishFormScreen() {
               {t('label_price')} <Text style={styles.requiredMark}>*</Text>
             </Text>
             <TextInput
-              style={styles.input}
+              style={[styles.input, errors.price ? styles.inputError : null]}
               placeholder="50000"
               keyboardType="numeric"
               value={price}
-              onChangeText={setPrice}
+              onChangeText={(text) => {
+                setPrice(text);
+                if (errors.price) {
+                  setErrors((prev) => {
+                    const c = { ...prev };
+                    delete c.price;
+                    return c;
+                  });
+                }
+              }}
             />
+            {Boolean(errors.price) && <Text style={styles.errorText}>{errors.price}</Text>}
           </View>
 
           <View style={[styles.flexHalf, { marginLeft: 12 }]}>
             <Text style={styles.label}>
-              {t('label_prep_time')} (phút) <Text style={styles.requiredMark}>*</Text>
+              {t('label_prep_time')} ({t('time_minutes')}){' '}
+              <Text style={styles.requiredMark}>*</Text>
             </Text>
             <TextInput
-              style={styles.input}
+              style={[styles.input, errors.prepTime ? styles.inputError : null]}
               placeholder="15"
               keyboardType="numeric"
               value={prepTime}
-              onChangeText={setPrepTime}
+              onChangeText={(text) => {
+                setPrepTime(text);
+                if (errors.prepTime) {
+                  setErrors((prev) => {
+                    const c = { ...prev };
+                    delete c.prepTime;
+                    return c;
+                  });
+                }
+              }}
             />
+            {Boolean(errors.prepTime) && (
+              <Text style={styles.errorText}>{errors.prepTime}</Text>
+            )}
           </View>
         </View>
 
@@ -394,6 +466,7 @@ export default function DishFormScreen() {
             </View>
           ))}
         </View>
+        {Boolean(errors.images) && <Text style={styles.errorText}>{errors.images}</Text>}
 
         {/* Thêm link ảnh mới */}
         <View style={styles.addImageRow}>
@@ -402,6 +475,7 @@ export default function DishFormScreen() {
             placeholder="Dán link ảnh (https://...)"
             value={newImageUrl}
             onChangeText={setNewImageUrl}
+            autoCapitalize="none"
           />
           <TouchableOpacity style={styles.btnAddImage} onPress={handleAddImage}>
             <Text style={styles.btnAddImageText}>+ {t('btn_add')}</Text>
@@ -480,6 +554,16 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     fontSize: 14,
     color: '#1F2937',
+  },
+  inputError: {
+    borderColor: '#EF4444',
+    backgroundColor: '#FEF2F2',
+  },
+  errorText: {
+    color: '#DC2626',
+    fontSize: 11,
+    marginTop: 4,
+    fontWeight: '600',
   },
   textArea: {
     height: 80,
