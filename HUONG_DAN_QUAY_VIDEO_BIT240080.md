@@ -148,6 +148,6 @@ Khi quay Video 2, mở mã nguồn dự án trên VS Code và trình bày theo t
 ---
 
 ## PHẦN D: THÔNG TIN LINK NỘP BÀI TRÊN LMS
-- **Link mã nguồn GitHub:** *(Điền link GitHub của bạn sau khi push ở Phần 4)*
-- **Link Video 1 (Demo ứng dụng):** *(Điền link Google Drive / YouTube Unlisted)*
-- **Link Video 2 (Thuyết minh code):** *(Điền link Google Drive / YouTube Unlisted)*
+- **Link mã nguồn GitHub:** [https://github.com/duynguyen1012/BIT240080_FoodManager](https://github.com/duynguyen1012/BIT240080_FoodManager)
+- **Link Video 1 (Demo ứng dụng):** *(Điền link Google Drive / YouTube Unlisted của bạn)*
+- **Link Video 2 (Thuyết minh code):** *(Điền link Google Drive / YouTube Unlisted của bạn)*
