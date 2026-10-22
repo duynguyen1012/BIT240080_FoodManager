@@ -88,3 +88,5 @@ link video demo giao diện:
 https://drive.google.com/file/d/1O-MG-P79QhtOwrk5MZ8Lg1-UQVFJTCql/view?usp=sharing
 
 link video thuyết minh+ demo:
+https://drive.google.com/file/d/1qvpwnr-SRIdkgSonSVWnwFFp-GvK8eQF/view?usp=sharing
+
